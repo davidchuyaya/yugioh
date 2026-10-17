@@ -39,6 +39,30 @@
             };
         }
 
+        // Look up an English recording of the word on Wiktionary
+        async function getWordAudioUrl(word) {
+            word = word.toLowerCase();
+            const api = "https://en.wiktionary.org/w/api.php?action=query&format=json&formatversion=2&origin=*" +
+                `&titles=${encodeURIComponent(word)}&generator=images&gimlimit=max` +
+                "&prop=videoinfo&viprop=url|mime|derivatives";
+            const data = await (await fetch(api)).json();
+
+            const files = (data.query?.pages ?? []).filter(p => {
+                const mime = p.videoinfo?.[0]?.mime ?? "";
+                const isAudio = mime.startsWith("audio") || mime === "application/ogg";
+                const isEnglish = /^File:en-/i.test(p.title) || p.title.includes("LL-Q1860 (eng)");
+                return isAudio && isEnglish;
+            });
+            if (files.length === 0) {
+                throw new Error(`No recording found for "${word}"`);
+            }
+
+            const info = files[0].videoinfo[0];
+            const mp3 = info.derivatives?.find(d => d.type.startsWith("audio/mpeg"));
+            // Fall back to the original ogg/wav if there's no mp3 version
+            return mp3?.src ?? info.url;
+        }
+
         window.onGoListener = function() {
             // Change background randomly
             const backgrounds = ["bg1.png", "bg2.png", "bg3.png"];
@@ -51,22 +75,15 @@
                 return;
             }
 
-            let words = customWord.split(" ");
-            // Known issue: there's no mp3 for the word "to". Replace with "two"
-            words = words.map(word => word === "to" ? "two" : word);
+            let words = customWord.split(" ").filter(word => word !== "");
 
             console.log(words);
             let crunker = new Crunker();
 
             // Get all individual words' sounds
-            Promise.all(words.map(word => 
-                fetch(`https://api.dictionaryapi.dev/api/v2/entries/en/${word}`)
-                .then(response => response.json())
-                .then(data => {
-                    const possiblePhonetics = data[0].phonetics;
-                    const audioLink = possiblePhonetics.filter(phonetic => phonetic.audio !== "")[0].audio;
-                    return crunker.fetchAudio(audioLink);
-                })
+            Promise.all(words.map(word =>
+                getWordAudioUrl(word)
+                .then(audioLink => crunker.fetchAudio(audioLink))
                 .then(buffers => {
                     const region = extractNonSilentRegions(buffers[0]);
                     return crunker.sliceAudio(buffers[0], region.start, region.end);
